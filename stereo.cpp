@@ -175,10 +175,6 @@ Mat depth3(Mat leftImage, Mat rightImage) {
   imshow("matches", matchImage);
   waitKey(0);
 
-  vector< vector<Point3f> > objpts;
-
-  double rms = stereoCalibrate(
-
 /*
   // compute the fundamental matrix (note: change to accompany the instrinsic parameters of the camera)
   // use stereo rectify for that
@@ -200,7 +196,17 @@ Mat depth3(Mat leftImage, Mat rightImage) {
   imshow("leftimage_epi", img5);
   imshow("rightimage_epi", img3);
   waitKey(0);
+*/
 
+  vector< vector<Point3f> > objpts(1);
+  for (int i = 0; i < pts1.size(); i++) {
+    objpts[0].push_back(Point3f((float)(pts1[i].x), (float)(pts1[i].y), 0));
+  }
+  Mat R,T,E,F;
+  double rms = stereoCalibrate(objpts, pts1, pts2, mtx, dist, mtx, dist,
+      leftImage.size(), R, T, E, F);
+
+/*
   // create a stereo matcher
   Ptr<StereoBM> stereo = StereoBM::create();
   //Ptr<StereoSGBM> stereo = StereoSGBM::create(
@@ -212,7 +218,8 @@ Mat depth3(Mat leftImage, Mat rightImage) {
   arma::mat _cc1 = compute_depth(_cc3.slice(0));
   Mat depth = cvt_arma2opencv(cvt_mat2cube(_cc1 * 2000.0));
 */
-  return depth;
+
+  return Mat();
 }
 
 int main(int argc, char *argv[]) {
