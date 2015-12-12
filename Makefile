@@ -11,6 +11,7 @@ LIBS = -L/usr/local/lib \
 			 -lopencv_xfeatures2d \
 			 -lopencv_flann \
 			 -lopencv_line_descriptor \
+			 -lopencv_stitching \
 			 -larmadillo
 OBJS = stereo.o highgui.o
 

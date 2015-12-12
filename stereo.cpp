@@ -4,6 +4,7 @@
 #include <opencv2/calib3d/calib3d.hpp>
 #include <opencv2/xfeatures2d/nonfree.hpp>
 #include <opencv2/line_descriptor/descriptor.hpp>
+#include <opencv2/stitching/detail/motion_estimators.hpp>
 #include <vector>
 #include <string>
 #include <iostream>
@@ -16,6 +17,7 @@ using namespace cv;
 using namespace cv::xfeatures2d;
 using namespace cv::flann;
 using namespace cv::line_descriptor;
+using namespace cv::detail;
 const int nmatches = 35;
 
 Mat drawMatches(Mat img1, vector<KeyPoint> kp1, Mat img2, vector<KeyPoint> kp2, vector<DMatch> matches) {
@@ -47,7 +49,7 @@ Mat drawMatches(Mat img1, vector<KeyPoint> kp1, Mat img2, vector<KeyPoint> kp2, 
     int y1 = (int)kp1[img1_idx].pt.y;
     int x2 = (int)kp2[img2_idx].pt.x;
     int y2 = (int)kp2[img2_idx].pt.y;
-    
+
     Vec3b color(rand() % 255, rand() % 255, rand() % 255);
     circle(out, Point(x1,y1), 4, color, 1);
     circle(out, Point(x2+cols1,y1), 4, color, 1);
@@ -109,30 +111,28 @@ Mat depth3(Mat leftImage, Mat rightImage) {
   srand(getpid());
 
   // Camera Matrix for the PS3 Eye
-  Mat mtx(3, 3, CV_32F);
-  mtx.at<float>(0, 0) = 545.82463365389708;
-  mtx.at<float>(0, 1) = 0;
-  mtx.at<float>(0, 2) = 319.5;
-  mtx.at<float>(1, 0) = 0;
-  mtx.at<float>(1, 1) = 545.82463365389708;
-  mtx.at<float>(1, 2) = 2.395;
-  mtx.at<float>(2, 0) = 0;
-  mtx.at<float>(2, 1) = 0;
-  mtx.at<float>(2, 2) = 1;
+  Mat mtx(3, 3, CV_64F);
+  mtx.at<double>(0, 0) = 545.82463365389708;
+  mtx.at<double>(0, 1) = 0;
+  mtx.at<double>(0, 2) = 319.5;
+  mtx.at<double>(1, 0) = 0;
+  mtx.at<double>(1, 1) = 545.82463365389708;
+  mtx.at<double>(1, 2) = 2.395;
+  mtx.at<double>(2, 0) = 0;
+  mtx.at<double>(2, 1) = 0;
+  mtx.at<double>(2, 2) = 1;
 
-  arma::cube K_ = cvt_opencv2arma(mtx);
-  arma::mat K = K_.slice(0);
+  // focal and point projective
+  Point2d pp(mtx.at<double>(0, 2), mtx.at<double>(1, 2));
+  double focal = mtx.at<double>(0, 0);
 
   // Distortion Coefficients for the PS3 Eye
-  Mat dist(5, 1, CV_32F);
-  dist.at<float>(0, 0) = -0.17081096154528716;
-  dist.at<float>(1, 0) = 0.26412699622915992;
-  dist.at<float>(2, 0) = 0;
-  dist.at<float>(3, 0) = 0;
-  dist.at<float>(4, 0) = -0.080381316677811496;
-
-  arma::cube D_ = cvt_opencv2arma(dist);
-  arma::mat D = D_.slice(0);
+  Mat dist(5, 1, CV_64F);
+  dist.at<double>(0, 0) = -0.17081096154528716;
+  dist.at<double>(1, 0) = 0.26412699622915992;
+  dist.at<double>(2, 0) = 0;
+  dist.at<double>(3, 0) = 0;
+  dist.at<double>(4, 0) = -0.080381316677811496;
 
   namedWindow("leftimage");
   namedWindow("rightimage");
@@ -175,13 +175,13 @@ Mat depth3(Mat leftImage, Mat rightImage) {
   imshow("matches", matchImage);
   waitKey(0);
 
-/*
+  /*
   // compute the fundamental matrix (note: change to accompany the instrinsic parameters of the camera)
   // use stereo rectify for that
   Mat fund = findFundamentalMat(pts1, pts2, FM_RANSAC, 3.0, 0.99);
   arma::cube F_ = cvt_opencv2arma(fund);
   arma::mat F = F_.slice(0);
-  
+
   // find the epilines in both images
   Mat lines1, lines2;
   computeCorrespondEpilines(pts2, 2, fund, lines1);
@@ -196,17 +196,26 @@ Mat depth3(Mat leftImage, Mat rightImage) {
   imshow("leftimage_epi", img5);
   imshow("rightimage_epi", img3);
   waitKey(0);
-*/
+  */
 
-  vector< vector<Point3f> > objpts(1);
-  for (int i = 0; i < pts1.size(); i++) {
-    objpts[0].push_back(Point3f((float)(pts1[i].x), (float)(pts1[i].y), 0));
-  }
-  Mat R,T,E,F;
-  double rms = stereoCalibrate(objpts, pts1, pts2, mtx, dist, mtx, dist,
+  /*  vector< vector<Point3f> > objpts(1);
+      for (int i = 0; i < pts1.size(); i++) {
+      objpts[0].push_back(Point3f((float)(pts1[i].x), (float)(pts1[i].y), 0));
+      }
+      Mat R, T, E, F;
+      double rms = stereoCalibrate(objpts, pts1, pts2, mtx, dist, mtx, dist,
       leftImage.size(), R, T, E, F);
+      */
 
-/*
+  // find the essential matrix and get the rotation and translation
+  Mat E, R, t, mask;
+  E = findEssentialMat(pts1, pts2, focal, pp, RANSAC, 0.999, 1.0, noArray());
+  recoverPose(E, pts1, pts2, R, t, focal, pp, mask);
+
+  // rectify to get the perspective projection
+  Mat R1, R2, P1, P2, Q;
+  stereoRectify(mtx, dist, mtx, dist, leftImage.size(), R, t, R1, R2, P1, P2, Q);
+
   // create a stereo matcher
   Ptr<StereoBM> stereo = StereoBM::create();
   //Ptr<StereoSGBM> stereo = StereoSGBM::create(
@@ -214,12 +223,46 @@ Mat depth3(Mat leftImage, Mat rightImage) {
 
   Mat disparity;
   stereo->compute(leftImage, rightImage, disparity);
-  arma::cube _cc3 = cvt_opencv2arma(disparity);
-  arma::mat _cc1 = compute_depth(_cc3.slice(0));
-  Mat depth = cvt_arma2opencv(cvt_mat2cube(_cc1 * 2000.0));
-*/
+  Mat depth;
+  reprojectImageTo3D(disparity, depth, Q);
 
-  return Mat();
+  imshow("depth", depth);
+  waitKey(0);
+
+  // triangulate points with the perspective projection
+  Mat hpts;
+  triangulatePoints(P1, P2, pts1, pts2, hpts);
+
+  destroyAllWindows();
+
+  return hpts;
+}
+
+void stereoReconstructSparse(vector<string> images) {
+  for (int i = 1; i < images.size(); i++) {
+    Mat leftimage = imread(images[i-1]);
+    Mat rightimage = imread(images[i]);
+
+    // figure out the new camera matrix based on non-linear methods (using the hypothesis mtx)
+    CameraParams cam1;
+    cam1.ppx = mtx.at<double>(0, 2);
+    cam1.ppy = mtx.at<double>(1, 2);
+    cam1.focal = focal;
+    cam1.R = Mat::eye(3, 3, CV_64F);
+    cam1.t = Mat::zeros(3, 1, CV_64F);
+    CameraParams cam2;
+    cam2.ppx = mtx.at<double>(0, 2);
+    cam2.ppy = mtx.at<double>(1, 2);
+    cam2.focal = focal;
+    cam2.R = R;
+    cam2.t = t;
+    vector<CameraParams> cameras;
+    cameras.push_back(cam1);
+    cameras.push_back(cam2);
+    BundleAdjusterReproj adjuster;
+
+    Mat hpts = 
+  }
 }
 
 int main(int argc, char *argv[]) {
@@ -234,10 +277,13 @@ int main(int argc, char *argv[]) {
   Mat leftImage = imread(limgname, IMREAD_GRAYSCALE);
   Mat rightImage = imread(rimgname, IMREAD_GRAYSCALE);
 
-  Mat stereoImage = depth3(leftImage, rightImage);
-  destroyAllWindows();
-  imshow("depth", stereoImage);
-  waitKey(0);
+  Mat hpts = depth3(leftImage, rightImage);
+
+  cout << endl;
+  for (int j = 0; j < hpts.cols; j++) {
+    Mat column = hpts.col(j);
+    cout << column << endl;
+  }
 
   return 0;
 }
