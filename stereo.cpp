@@ -5,6 +5,7 @@
 #include <opencv2/xfeatures2d/nonfree.hpp>
 #include <opencv2/line_descriptor/descriptor.hpp>
 #include <opencv2/stitching/detail/motion_estimators.hpp>
+#include <cvsba/cvsba.h>
 #include <vector>
 #include <string>
 #include <iostream>
@@ -19,6 +20,12 @@ using namespace cv::flann;
 using namespace cv::line_descriptor;
 using namespace cv::detail;
 const int nmatches = 35;
+
+// Camera Matrix for the PS3 Eye
+Mat mtx(3, 3, CV_64F);
+
+// Distortion Coefficients for the PS3 Eye
+Mat dist(5, 1, CV_64F);
 
 Mat drawMatches(Mat img1, vector<KeyPoint> kp1, Mat img2, vector<KeyPoint> kp2, vector<DMatch> matches) {
   int rows1 = img1.rows;
@@ -82,63 +89,25 @@ void drawLines(Mat img1, Mat img2, Mat lines, vector<Point2f> pts1, vector<Point
 }
 
 arma::mat compute_depth(arma::mat disparity) {
-  arma::mat bad_match(disparity.n_rows, disparity.n_cols, arma::fill::zeros);
   arma::mat depth(disparity.n_rows, disparity.n_cols, arma::fill::zeros);
   disparity /= disparity.max(); // normalize
   for (arma::uword i = 0; i < disparity.n_rows; i++) {
     for (arma::uword j = 0; j < disparity.n_cols; j++) {
       if (disparity(i, j) == 0.0) {
         depth(i, j) = 0.0;
-        bad_match(i, j) = 1.0;
       } else {
         depth(i, j) = 1.0 / disparity(i, j);
-        bad_match(i, j) = 0.0;
       }
     }
   }
   depth /= depth.max();
-  for (arma::uword i = 0; i < disparity.n_rows; i++) {
-    for (arma::uword j = 0; j < disparity.n_cols; j++) {
-      if (bad_match(i, j) == 1.0) {
-        depth(i, j) = 1.0;
-      }
-    }
-  }
   return depth;
 }
 
-Mat depth3(Mat leftImage, Mat rightImage) {
-  srand(getpid());
-
-  // Camera Matrix for the PS3 Eye
-  Mat mtx(3, 3, CV_64F);
-  mtx.at<double>(0, 0) = 545.82463365389708;
-  mtx.at<double>(0, 1) = 0;
-  mtx.at<double>(0, 2) = 319.5;
-  mtx.at<double>(1, 0) = 0;
-  mtx.at<double>(1, 1) = 545.82463365389708;
-  mtx.at<double>(1, 2) = 2.395;
-  mtx.at<double>(2, 0) = 0;
-  mtx.at<double>(2, 1) = 0;
-  mtx.at<double>(2, 2) = 1;
-
+Mat depth2(Mat leftImage, Mat rightImage, Mat &R, Mat &t, Mat &pts3d, vector<Point2f> pts1, vector<Point2f> pts2) {
   // focal and point projective
   Point2d pp(mtx.at<double>(0, 2), mtx.at<double>(1, 2));
   double focal = mtx.at<double>(0, 0);
-
-  // Distortion Coefficients for the PS3 Eye
-  Mat dist(5, 1, CV_64F);
-  dist.at<double>(0, 0) = -0.17081096154528716;
-  dist.at<double>(1, 0) = 0.26412699622915992;
-  dist.at<double>(2, 0) = 0;
-  dist.at<double>(3, 0) = 0;
-  dist.at<double>(4, 0) = -0.080381316677811496;
-
-  namedWindow("leftimage");
-  namedWindow("rightimage");
-  imshow("leftimage", leftImage);
-  imshow("rightimage", rightImage);
-  waitKey(0);
 
   // Start the SIFT detector
   Ptr<SIFT> sift = SIFT::create();
@@ -157,7 +126,6 @@ Mat depth3(Mat leftImage, Mat rightImage) {
   flann.knnMatch(des1, des2, matches, 2);
 
   vector<DMatch> good;
-  vector<Point2f> pts1, pts2;
 
   // ratio test (as per Lowe's paper)
   for (int i = 0; i < matches.size(); i++) {
@@ -170,99 +138,68 @@ Mat depth3(Mat leftImage, Mat rightImage) {
     }
   }
 
-  Mat matchImage = drawMatches(leftImage, kp1, rightImage, kp2, good);
-  namedWindow("matches");
-  imshow("matches", matchImage);
-  waitKey(0);
+  Mat matchFrame = drawMatches(leftImage, kp1, rightImage, kp2, good);
+  imwrite("matches.png", matchFrame);
 
-  /*
-  // compute the fundamental matrix (note: change to accompany the instrinsic parameters of the camera)
-  // use stereo rectify for that
-  Mat fund = findFundamentalMat(pts1, pts2, FM_RANSAC, 3.0, 0.99);
-  arma::cube F_ = cvt_opencv2arma(fund);
-  arma::mat F = F_.slice(0);
-
-  // find the epilines in both images
-  Mat lines1, lines2;
-  computeCorrespondEpilines(pts2, 2, fund, lines1);
-  computeCorrespondEpilines(pts1, 1, fund, lines2);
-  Mat img5, img6;
-  drawLines(leftImage, rightImage, lines1, pts1, pts2, img5, img6);
-  Mat img3, img4;
-  drawLines(rightImage, leftImage, lines2, pts2, pts1, img3, img4);
-
-  namedWindow("leftimage");
-  namedWindow("rightimage");
-  imshow("leftimage_epi", img5);
-  imshow("rightimage_epi", img3);
-  waitKey(0);
-  */
-
-  /*  vector< vector<Point3f> > objpts(1);
-      for (int i = 0; i < pts1.size(); i++) {
-      objpts[0].push_back(Point3f((float)(pts1[i].x), (float)(pts1[i].y), 0));
-      }
-      Mat R, T, E, F;
-      double rms = stereoCalibrate(objpts, pts1, pts2, mtx, dist, mtx, dist,
-      leftImage.size(), R, T, E, F);
-      */
+  // find the fundamental matrix, then use H&Z for essential
+  Mat F = findFundamentalMat(pts1, pts2, FM_RANSAC, 3.0, 0.99);
+  Mat E = mtx.t() * F * mtx;
 
   // find the essential matrix and get the rotation and translation
-  Mat E, R, t, mask;
-  E = findEssentialMat(pts1, pts2, focal, pp, RANSAC, 0.999, 1.0, noArray());
+  Mat mask;
   recoverPose(E, pts1, pts2, R, t, focal, pp, mask);
 
   // rectify to get the perspective projection
   Mat R1, R2, P1, P2, Q;
-  stereoRectify(mtx, dist, mtx, dist, leftImage.size(), R, t, R1, R2, P1, P2, Q);
+  stereoRectify(mtx, Mat::zeros(5, 1, CV_64F), mtx, Mat::zeros(5, 1, CV_64F), leftImage.size(), R, t, R1, R2, P1, P2, Q);
 
-  // create a stereo matcher
+  // triangulate points with the perspective projection and convert them
+  Mat hpts;
+  triangulatePoints(P1, P2, pts1, pts2, hpts);
+  convertPointsFromHomogeneous(hpts.t(), pts3d);
+
+  // create a stereo matcher and get a depth frame
   Ptr<StereoBM> stereo = StereoBM::create();
-  //Ptr<StereoSGBM> stereo = StereoSGBM::create(
-  //    16, 96, 16, 8*3*3*3, 32*3*3*3, 1, 10, 100, 32);
-
   Mat disparity;
   stereo->compute(leftImage, rightImage, disparity);
   Mat depth;
-  reprojectImageTo3D(disparity, depth, Q);
+  reprojectImageTo3D(disparity, depth, Q, false, CV_16S);
 
-  imshow("depth", depth);
-  waitKey(0);
-
-  // triangulate points with the perspective projection
-  Mat hpts;
-  triangulatePoints(P1, P2, pts1, pts2, hpts);
-
-  destroyAllWindows();
-
-  return hpts;
+  return depth;
 }
 
 void stereoReconstructSparse(vector<string> images) {
+  vector<CameraParams> cameras;
+  vector<Mat> rot, trans;
+
+  rot.push_back(Mat::eye(3, 3, CV_64F));
+  trans.push_back(Mat::zeros(3, 1, CV_64F));
+
   for (int i = 1; i < images.size(); i++) {
     Mat leftimage = imread(images[i-1]);
     Mat rightimage = imread(images[i]);
+
+    Mat R, t, hpts;
+    vector<Point2f> pts1, pts2;
+    Mat depth = depth2(leftimage, rightimage, R, t, hpts, pts1, pts2);
+
+    // push back the thingy
 
     // figure out the new camera matrix based on non-linear methods (using the hypothesis mtx)
     CameraParams cam1;
     cam1.ppx = mtx.at<double>(0, 2);
     cam1.ppy = mtx.at<double>(1, 2);
-    cam1.focal = focal;
-    cam1.R = Mat::eye(3, 3, CV_64F);
-    cam1.t = Mat::zeros(3, 1, CV_64F);
+    cam1.focal = mtx.at<double>(0, 0);
     CameraParams cam2;
     cam2.ppx = mtx.at<double>(0, 2);
     cam2.ppy = mtx.at<double>(1, 2);
-    cam2.focal = focal;
+    cam2.focal = mtx.at<double>(0, 0);
     cam2.R = R;
     cam2.t = t;
-    vector<CameraParams> cameras;
     cameras.push_back(cam1);
     cameras.push_back(cam2);
-    BundleAdjusterReproj adjuster;
-
-    Mat hpts = 
   }
+  BundleAdjusterReproj adjuster;
 }
 
 int main(int argc, char *argv[]) {
@@ -270,6 +207,16 @@ int main(int argc, char *argv[]) {
     printf("usage: %s [img1name] [img2name]\n", argv[0]);
     return 1;
   }
+  srand(getpid());
+
+  arma::mat K = reshape(arma::mat({
+        545.82463365389708, 0, 319.5,
+        0, 545.82463365389708, 2.395,
+        0, 0, 1}), 3, 3).t();
+  arma::mat D = arma::mat({ -0.17081096154528716, 0.26412699622915992,
+      0, 0, -0.080381316677811496 }).t();
+  mtx = arma2opencv(K);
+  dist = arma2opencv(D);
 
   string limgname = string(argv[1]);
   string rimgname = string(argv[2]);
@@ -277,13 +224,20 @@ int main(int argc, char *argv[]) {
   Mat leftImage = imread(limgname, IMREAD_GRAYSCALE);
   Mat rightImage = imread(rimgname, IMREAD_GRAYSCALE);
 
-  Mat hpts = depth3(leftImage, rightImage);
+  Mat R, t, pts3d;
+  vector<Point2f> pts1, pts2;
+  Mat newleft, newright;
+  undistort(leftImage, newleft, mtx, dist);
+  undistort(rightImage, newright, mtx, dist);
+  Mat depth = depth2(newleft, newright, R, t, pts3d, pts1, pts2);
+  cout << pts3d << endl;
 
-  cout << endl;
-  for (int j = 0; j < hpts.cols; j++) {
-    Mat column = hpts.col(j);
-    cout << column << endl;
-  }
+  imshow("left", newleft);
+  imshow("right", newright);
+
+  imshow("depth", depth);
+  waitKey(0);
+  imwrite("depth.png", depth);
 
   return 0;
 }

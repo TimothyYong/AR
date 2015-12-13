@@ -99,6 +99,18 @@ arma::cube cvt_opencv2arma(const cv::Mat &cv_image);
  */
 cv::Mat cvt_arma2opencv(const arma::cube &image);
 
+/** Convert the cv::Mat to an arma::mat
+ *  @param cv_mtx the cv::Mat
+ *  @return the arma::mat
+ */
+arma::mat opencv2arma(const cv::Mat &cv_mtx);
+
+/** Convert the arma::mat to a cv::Mat
+ *  @param mtx the arma::mat
+ *  @return the cv::Mat
+ */
+cv::Mat arma2opencv(const arma::mat &mtx, int cvtype = CV_64F);
+
 /** Convert rgb to grayscale
  *  @param image the rgb image
  *  @return the grayscale image

@@ -198,6 +198,8 @@ void disp_close(const std::string &window_name) {
   cv::destroyWindow(window_name);
 }
 
+// ARMADILLO
+
 cv::Mat cvt_arma2opencv(const arma::cube &image) {
   cv::Mat cv_image;
   switch (image.n_slices) {
@@ -238,6 +240,46 @@ cv::Mat cvt_arma2opencv(const arma::cube &image) {
       break;
   }
   return cv_image;
+}
+
+cv::Mat arma2opencv(const arma::mat &mtx, int cvtype) {
+  cv::Mat cv_mtx = cv::Mat::zeros(mtx.n_rows, mtx.n_cols, cvtype);
+  for (int i = 0; i < cv_mtx.rows; i++) {
+    for (int j = 0; j < cv_mtx.cols; j++) {
+      switch (cvtype) {
+        case CV_32F:
+          cv_mtx.at<float>(i, j) = (float)mtx(i, j);
+          break;
+        case CV_64F:
+          cv_mtx.at<double>(i, j) = mtx(i, j);
+          break;
+        default:
+          printf("Error: cannot do type\n");
+          break;
+      }
+    }
+  }
+  return cv_mtx;
+}
+
+arma::mat opencv2arma(const cv::Mat &cv_mtx) {
+  arma::mat mtx(cv_mtx.rows, cv_mtx.cols, arma::fill::zeros);
+  for (int i = 0; i < cv_mtx.rows; i++) {
+    for (int j = 0; j < cv_mtx.cols; j++) {
+      switch (cv_mtx.type()) {
+        case CV_32F:
+          mtx(i, j) = cv_mtx.at<float>(i, j);
+          break;
+        case CV_64F:
+          mtx(i, j) = cv_mtx.at<double>(i, j);
+          break;
+        default:
+          printf("Error: cannot do type\n");
+          break;
+      }
+    }
+  }
+  return mtx;
 }
 
 static int limit(int x, int minv, int maxv) {
