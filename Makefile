@@ -12,7 +12,8 @@ LIBS = -L/usr/local/lib \
 			 -lopencv_flann \
 			 -lopencv_line_descriptor \
 			 -lopencv_stitching \
-			 -larmadillo
+			 -larmadillo \
+			 -lcvsba
 OBJS = stereo.o highgui.o kcluster.o
 
 all: capture calibrate stereo

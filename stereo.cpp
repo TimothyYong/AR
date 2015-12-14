@@ -105,19 +105,46 @@ arma::mat compute_depth(arma::mat disparity) {
   return depth;
 }
 
-Mat depth2(Mat leftImage, Mat rightImage, Mat &R, Mat &t, Mat &pts3d, vector<Point2f> pts1, vector<Point2f> pts2) {
+void grabFeatures(Mat img, vector<KeyPoint> &kp, Mat &des) {
+  Ptr<SIFT> sift = SIFT::create();
+  sift->detectAndCompute(img, noArray(), kp, des);
+}
+
+Mat filterZ(Mat pts3d, vector<Point2f> &pts1, vector<Point2f> &pts2) {
+  arma::mat _pts3d = opencv2arma(pts3d);
+  vector<Point3d> pts;
+  vector<Point2f> npts1, npts2;
+  for (int i = 0; i < (int)_pts3d.n_rows; i++) {
+    if (_pts3d(i, 2) > 0) {
+      pts.push_back(pts3d.at<Point3f>(i, 0));
+      npts1.push_back(pts1[i]);
+      npts2.push_back(pts2[i]);
+    }
+  }
+  pts1 = npts1;
+  pts2 = npts2;
+  Mat fz(pts.size(), 1, CV_32FC3);
+  for (int i = 0; i < pts.size(); i++) {
+    fz.at<Point3f>(i, 0) = pts[i];
+  }
+  return fz;
+}
+
+int testTriangulate(Mat &pts3d) {
+  arma::mat _pts3d = opencv2arma(pts3d);
+  int numz = 0;
+  for (int i = 0; i < (int)_pts3d.n_rows; i++) {
+    if (_pts3d(i, 2) > 0) {
+      numz++;
+    }
+  }
+  return numz;
+}
+
+Mat depth2(const Mat leftImage, const Mat rightImage, const vector<KeyPoint> kp1, const vector<KeyPoint> kp2, const Mat des1, const Mat des2, Mat &R, Mat &t, Mat &pts3d, vector<Point2f> &pts1, vector<Point2f> &pts2) {
   // focal and point projective
   Point2d pp(mtx.at<double>(0, 2), mtx.at<double>(1, 2));
   double focal = mtx.at<double>(0, 0);
-
-  // Start the SIFT detector
-  Ptr<SIFT> sift = SIFT::create();
-
-  // Find the keypoints from SIFT using the images given
-  vector<KeyPoint> kp1, kp2;
-  Mat des1, des2;
-  sift->detectAndCompute(leftImage, noArray(), kp1, des1);
-  sift->detectAndCompute(rightImage, noArray(), kp2, des2);
 
   // FLANN parameters
   Ptr<IndexParams> indexParams = makePtr<KDTreeIndexParams>(5);
@@ -129,6 +156,8 @@ Mat depth2(Mat leftImage, Mat rightImage, Mat &R, Mat &t, Mat &pts3d, vector<Poi
   vector<DMatch> good;
 
   // ratio test (as per Lowe's paper)
+  pts1.clear();
+  pts2.clear();
   for (int i = 0; i < matches.size(); i++) {
     DMatch m = matches[i][0];
     DMatch n = matches[i][1];
@@ -156,9 +185,9 @@ Mat depth2(Mat leftImage, Mat rightImage, Mat &R, Mat &t, Mat &pts3d, vector<Poi
         1, 0, 0,
         0, 0, 1 }), 3, 3).t();
   svd(U, s, V, E_);
-
-  // four fold ambiguous
   arma::mat u3 = U.col(2);
+
+  // 4-fold ambiguity
   vector<arma::mat> p_primes;
   p_primes.push_back(arma::join_rows(U * W * V.t(), u3));
   p_primes.push_back(arma::join_rows(U * W * V.t(), -u3));
@@ -166,84 +195,147 @@ Mat depth2(Mat leftImage, Mat rightImage, Mat &R, Mat &t, Mat &pts3d, vector<Poi
   p_primes.push_back(arma::join_rows(U * W.t() * V.t(), -u3));
 
   // find the essential matrix and get the rotation and translation
-  Mat mask;
-  recoverPose(E, pts1, pts2, R, t, focal, pp, mask);
+  // note: does not work with 4-fold ambiguity
+  //Mat mask;
+  //recoverPose(E, pts1, pts2, R, t, focal, pp, mask);
 
-  // rectify to get the perspective projection
-  Mat R1, R2, P1, P2, Q;
-  stereoRectify(mtx, Mat::zeros(5, 1, CV_64F), mtx, Mat::zeros(5, 1, CV_64F), leftImage.size(), R, t, R1, R2, P1, P2, Q);
+  // match up the matrix to the recover pose to get the best possible solution
+  int maxz = 0;
+  Mat Q;
+  for (int i = 0; i < 4; i++) {
+    arma::mat P_ = p_primes[i];
+    arma::mat R_ = P_(arma::span::all, arma::span(0, 2));
+    arma::mat t_ = P_.col(3);
+    Mat tempR = arma2opencv(R_);
+    Mat tempt = arma2opencv(t_);
 
-  pts3d.clear();
-  Mat pts3;
+    // rectify to get the perspective projection
+    Mat R1, R2, P1, P2;
+    stereoRectify(mtx, Mat::zeros(5, 1, CV_64F), mtx, Mat::zeros(5, 1, CV_64F), leftImage.size(), tempR, tempt, R1, R2, P1, P2, Q);
 
-  // temp
-  p_primes.clear();
-
-//  for (arma::mat &Pp : p_primes) {
-//    cout << Pp << endl << endl;
-
-    // triangulate points with the perspective projection and convert them
-//    P1 = arma2opencv(arma::join_rows(arma::eye<arma::mat>(3, 3), arma::vec({ 0, 0, 0 })));
-//    P2 = arma2opencv(Pp);
-    Mat hpts;
+    // triangulate and cluster
+    Mat hpts, dpts;
     triangulatePoints(P1, P2, pts1, pts2, hpts);
-//    cout << hpts << endl;
-    convertPointsFromHomogeneous(hpts.t(), pts3);
-    pts3 = kclusterFilter(pts3, 3);
-    cout << pts3 << endl;
-    pts3d.push_back(pts3);
-//  }
+    convertPointsFromHomogeneous(hpts.t(), dpts);
 
+    // once triangulate found, test it out, and set if better
+    int interimz = 0;
+    if ((interimz = testTriangulate(dpts)) > maxz) {
+      maxz = interimz;
+      pts3d = dpts;
+      R = tempR;
+      t = tempt;
+    }
+  }
 
-  // cluster filter to remove ambiguities from a single object
-  //pts3d = kclusterFilter(pts3d, 3);
+  // filter out the negative z's
+  //pts3d = filterZ(pts3d, pts1, pts2);
+  // filter out bad clusters
+  //pts3d = kclusterFilter(pts3d, 2);
 
   // create a stereo matcher and get a depth frame
-  /*Ptr<StereoBM> stereo = StereoBM::create();
+  Ptr<StereoBM> stereo = StereoBM::create();
   Mat disparity;
   stereo->compute(leftImage, rightImage, disparity);
   Mat depth;
-  reprojectImageTo3D(disparity, depth, Q, false, CV_32F);*/
+  reprojectImageTo3D(disparity, depth, Q, false, CV_32F);
 
-  return Mat();
+  return depth;
 }
 
 void stereoReconstructSparse(vector<string> images) {
-  vector<CameraParams> cameras;
-  vector<Mat> rot, trans;
+  vector<Mat> rot, trans, cameraMatrix, distCoeffs;
   vector< vector<Point2f> > points1, points2;
+  vector<Point3d> points3d;
+  vector< vector<Point2d> > imagePoints(images.size());
+  vector< vector<int> > visibility(images.size());
 
+  vector<Mat> scene;
+  vector< vector<KeyPoint> > keypoints;
+  vector<Mat> descriptors;
+
+  // init parameters
   rot.push_back(Mat::eye(3, 3, CV_64F));
   trans.push_back(Mat::zeros(3, 1, CV_64F));
+  cameraMatrix.push_back(mtx);
+  distCoeffs.push_back(Mat::zeros(5, 1, CV_64F));
 
-  for (int i = 1; i < images.size(); i++) {
-    Mat leftimage = imread(images[i-1]);
-    Mat rightimage = imread(images[i]);
-
-    Mat r, t;
-    vector<Mat> hpts;
-    vector<Point2f> pts1, pts2;
-    Mat depth = depth2(leftimage, rightimage, r, t, hpts, pts1, pts2);
-
-    // push back the data
-    rot.push_back(r);
-    trans.push_back(t);
+  // get the calibration parameters for the function
+  for (int i = 0; i < images.size(); i++) {
+    cout << "Attempting to read: " << images[i] << endl;
+    Mat img = imread(images[i], IMREAD_GRAYSCALE), uimg;
+    undistort(img, uimg, mtx, dist);
+    scene.push_back(uimg);
+    vector<KeyPoint> kp;
+    Mat des;
+    grabFeatures(img, kp, des);
+    keypoints.push_back(kp);
+    descriptors.push_back(des);
   }
 
-  // filter out irrelevant matches (to do)
-  //
+  // get the depth points from the triangulation
+  cout << "now trying to triangulate\n";
+  for (int i = 1; i < images.size(); i++) {
+    Mat r, t, pts3d;
+    vector<Point2f> pts1, pts2;
+    vector<KeyPoint> kp1 = keypoints[i-1];
+    vector<KeyPoint> kp2 = keypoints[i];
+    Mat des1 = descriptors[i-1];
+    Mat des2 = descriptors[i];
+    Mat leftimage = scene[i-1];
+    Mat rightimage = scene[i];
+    Mat depth = depth2(leftimage, rightimage, kp1, kp2, des1, des2, r, t, pts3d, pts1, pts2); // these pts are not correct
+    points1.push_back(pts1);
+    points2.push_back(pts2);
+
+    // push back the data
+    int N = pts3d.rows;
+    cout << pts3d.rows << endl << pts1.size() << endl << pts2.size() << endl;
+    for (int j = 0; j < N; j++) {
+      // place the 3d point in
+      Point3f pt = pts3d.at<Point3f>(j, 0);
+      points3d.push_back(Point3d(pt.x, pt.y, pt.z));
+      // update cameras
+      for (int k = 0; k < images.size(); k++) {
+        // place the image points and the visibility in the matrix
+        if (k == i-1) {
+          imagePoints[k].push_back(Point2d(pts1[j].x, pts1[j].y));
+          visibility[k].push_back(1);
+        } else if (k == i) {
+          imagePoints[k].push_back(Point2d(pts2[j].x, pts2[j].y));
+          visibility[k].push_back(1);
+        } else {
+          imagePoints[k].push_back(Point2d(0, 0));
+          visibility[k].push_back(0);
+        }
+      }
+    }
+    // place the camera matrix, the rotation, the translation, and the distortion in
+    cameraMatrix.push_back(mtx);
+    rot.push_back(r);
+    trans.push_back(t);
+    distCoeffs.push_back(Mat::zeros(5, 1, CV_64F));
+  }
+
+  // filter out irrelevant matches (TODO)
+  // this constructs dependency graph (and tracking)
+
   // bundle adjust using cvsba
-  vector<Point3d> points3d;
-  vector< vector<Point2d> > pointsImage;
-  vector< vector<int> > visibility;
-  
+  cout << "bundle adjusting\n";
+  printf("cam check: %zd %zd\n", imagePoints.size(), visibility.size());
+  printf("check: %zd %zd %zd %zd %zd %zd %zd\n", points3d.size(), imagePoints[0].size(), visibility[0].size(), cameraMatrix.size(), rot.size(), trans.size(), distCoeffs.size());
+  printf("check2: %d %d %d %d\n", rot[0].rows, rot[0].cols, trans[0].rows, trans[0].cols);
+  cvsba::Sba sba;
+  sba.run(points3d, imagePoints, visibility, cameraMatrix, rot, trans, distCoeffs);
+  cout << "Initial error: " << sba.getInitialReprjError() << endl <<
+          "Final error: " << sba.getFinalReprjError() << endl;
 }
 
 int main(int argc, char *argv[]) {
-  if (argc < 3) {
-    printf("usage: %s [img1name] [img2name]\n", argv[0]);
-    return 1;
-  }
+//  if (argc < 3) {
+//    printf("usage: %s [img1name] [img2name]\n", argv[0]);
+//    return 1;
+//  }
   srand(getpid());
 
   arma::mat K = reshape(arma::mat({
@@ -255,26 +347,41 @@ int main(int argc, char *argv[]) {
   mtx = arma2opencv(K);
   dist = arma2opencv(D);
 
-  string limgname = string(argv[1]);
+  vector<string> names = {
+    "jumper/img00.png",
+    "jumper/img01.png",
+    "jumper/img02.png",
+    "jumper/img03.png",
+    "jumper/img04.png",
+    "jumper/img05.png",
+    "jumper/img06.png" };
+
+  stereoReconstructSparse(names);
+
+  /*string limgname = string(argv[1]);
   string rimgname = string(argv[2]);
 
   Mat leftImage = imread(limgname, IMREAD_GRAYSCALE);
   Mat rightImage = imread(rimgname, IMREAD_GRAYSCALE);
 
-  Mat R, t;
-  vector<Mat> pts3d;
+  Mat R, t, pts3d;
   vector<Point2f> pts1, pts2;
   Mat newleft, newright;
   undistort(leftImage, newleft, mtx, dist);
   undistort(rightImage, newright, mtx, dist);
-  Mat depth = depth2(newleft, newright, R, t, pts3d, pts1, pts2);
+  vector<KeyPoint> kp1, kp2;
+  Mat des1, des2;
+  grabFeatures(newleft, kp1, des1);
+  grabFeatures(newright, kp2, des2);
+  Mat depth = depth2(newleft, newright, kp1, kp2, des1, des2, R, t, pts3d, pts1, pts2);
+  cout << pts3d << endl;
 
   imshow("left", newleft);
-  imshow("right", newright);
+  imshow("right", newright);*/
 
-  imshow("depth", depth);
-  waitKey(0);
-  imwrite("depth.png", depth);
+//  imshow("depth", depth);
+//  waitKey(0);
+//  imwrite("depth.png", depth);
 
   return 0;
 }
