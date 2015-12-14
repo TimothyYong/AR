@@ -243,9 +243,17 @@ cv::Mat cvt_arma2opencv(const arma::cube &image) {
 }
 
 cv::Mat arma2opencv(const arma::mat &mtx, int cvtype) {
-  cv::Mat cv_mtx = cv::Mat::zeros(mtx.n_rows, mtx.n_cols, cvtype);
-  for (int i = 0; i < cv_mtx.rows; i++) {
-    for (int j = 0; j < cv_mtx.cols; j++) {
+  cv::Mat cv_mtx;
+  switch (cvtype) {
+    case CV_32F:
+    case CV_64F:
+      cv_mtx = cv::Mat::zeros(mtx.n_rows, mtx.n_cols, cvtype);
+      break;
+    case CV_32FC3:
+      cv_mtx = cv::Mat::zeros(mtx.n_rows, 1, cvtype);
+  }
+  for (int i = 0; i < (int)mtx.n_rows; i++) {
+    for (int j = 0; j < (int)mtx.n_cols; j++) {
       switch (cvtype) {
         case CV_32F:
           cv_mtx.at<float>(i, j) = (float)mtx(i, j);
@@ -253,8 +261,10 @@ cv::Mat arma2opencv(const arma::mat &mtx, int cvtype) {
         case CV_64F:
           cv_mtx.at<double>(i, j) = mtx(i, j);
           break;
+        case CV_32FC3:
+          cv_mtx.at<cv::Vec3f>(i, 0)[j] = mtx(i, j);
         default:
-          printf("Error: cannot do type\n");
+          printf("Error: cannot do type %d\n", cvtype);
           break;
       }
     }
@@ -263,9 +273,18 @@ cv::Mat arma2opencv(const arma::mat &mtx, int cvtype) {
 }
 
 arma::mat opencv2arma(const cv::Mat &cv_mtx) {
-  arma::mat mtx(cv_mtx.rows, cv_mtx.cols, arma::fill::zeros);
-  for (int i = 0; i < cv_mtx.rows; i++) {
-    for (int j = 0; j < cv_mtx.cols; j++) {
+  arma::mat mtx;
+  switch (cv_mtx.type()) {
+    case CV_32F:
+    case CV_64F:
+      mtx = arma::mat(cv_mtx.rows, cv_mtx.cols, arma::fill::zeros);
+      break;
+    case CV_32FC3:
+      mtx = arma::mat(cv_mtx.rows, 3, arma::fill::zeros);
+      break;
+  }
+  for (int i = 0; i < (int)mtx.n_rows; i++) {
+    for (int j = 0; j < (int)mtx.n_cols; j++) {
       switch (cv_mtx.type()) {
         case CV_32F:
           mtx(i, j) = cv_mtx.at<float>(i, j);
@@ -273,8 +292,11 @@ arma::mat opencv2arma(const cv::Mat &cv_mtx) {
         case CV_64F:
           mtx(i, j) = cv_mtx.at<double>(i, j);
           break;
+        case CV_32FC3:
+          mtx(i, j) = cv_mtx.at<cv::Vec3f>(i, 0)[j];
+          break;
         default:
-          printf("Error: cannot do type\n");
+          printf("Error: cannot do type %d\n", cv_mtx.type());
           break;
       }
     }

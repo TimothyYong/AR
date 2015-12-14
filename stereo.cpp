@@ -5,13 +5,14 @@
 #include <opencv2/xfeatures2d/nonfree.hpp>
 #include <opencv2/line_descriptor/descriptor.hpp>
 #include <opencv2/stitching/detail/motion_estimators.hpp>
-#include <cvsba/cvsba.h>
+#include <cvsba/cvsba.h> // used for the clustering
 #include <vector>
 #include <string>
 #include <iostream>
 #include <sys/types.h>
 #include <unistd.h>
 #include "highgui.h"
+#include "kcluster.h"
 
 using namespace std;
 using namespace cv;
@@ -142,8 +143,27 @@ Mat depth2(Mat leftImage, Mat rightImage, Mat &R, Mat &t, Mat &pts3d, vector<Poi
   imwrite("matches.png", matchFrame);
 
   // find the fundamental matrix, then use H&Z for essential
+  //Mat E = findEssentialMat(pts1, pts2, focal, pp);
   Mat F = findFundamentalMat(pts1, pts2, FM_RANSAC, 3.0, 0.99);
   Mat E = mtx.t() * F * mtx;
+  arma::mat E_ = opencv2arma(E);
+
+  // svd to get U, V, W
+  arma::mat U, V;
+  arma::vec s;
+  arma::mat W = arma::reshape(arma::mat({
+        0, -1, 0,
+        1, 0, 0,
+        0, 0, 1 }), 3, 3).t();
+  svd(U, s, V, E_);
+
+  // four fold ambiguous
+  arma::mat u3 = U.col(2);
+  vector<arma::mat> p_primes;
+  p_primes.push_back(arma::join_rows(U * W * V.t(), u3));
+  p_primes.push_back(arma::join_rows(U * W * V.t(), -u3));
+  p_primes.push_back(arma::join_rows(U * W.t() * V.t(), u3));
+  p_primes.push_back(arma::join_rows(U * W.t() * V.t(), -u3));
 
   // find the essential matrix and get the rotation and translation
   Mat mask;
@@ -153,24 +173,45 @@ Mat depth2(Mat leftImage, Mat rightImage, Mat &R, Mat &t, Mat &pts3d, vector<Poi
   Mat R1, R2, P1, P2, Q;
   stereoRectify(mtx, Mat::zeros(5, 1, CV_64F), mtx, Mat::zeros(5, 1, CV_64F), leftImage.size(), R, t, R1, R2, P1, P2, Q);
 
-  // triangulate points with the perspective projection and convert them
-  Mat hpts;
-  triangulatePoints(P1, P2, pts1, pts2, hpts);
-  convertPointsFromHomogeneous(hpts.t(), pts3d);
+  pts3d.clear();
+  Mat pts3;
+
+  // temp
+  p_primes.clear();
+
+//  for (arma::mat &Pp : p_primes) {
+//    cout << Pp << endl << endl;
+
+    // triangulate points with the perspective projection and convert them
+//    P1 = arma2opencv(arma::join_rows(arma::eye<arma::mat>(3, 3), arma::vec({ 0, 0, 0 })));
+//    P2 = arma2opencv(Pp);
+    Mat hpts;
+    triangulatePoints(P1, P2, pts1, pts2, hpts);
+//    cout << hpts << endl;
+    convertPointsFromHomogeneous(hpts.t(), pts3);
+    pts3 = kclusterFilter(pts3, 3);
+    cout << pts3 << endl;
+    pts3d.push_back(pts3);
+//  }
+
+
+  // cluster filter to remove ambiguities from a single object
+  //pts3d = kclusterFilter(pts3d, 3);
 
   // create a stereo matcher and get a depth frame
-  Ptr<StereoBM> stereo = StereoBM::create();
+  /*Ptr<StereoBM> stereo = StereoBM::create();
   Mat disparity;
   stereo->compute(leftImage, rightImage, disparity);
   Mat depth;
-  reprojectImageTo3D(disparity, depth, Q, false, CV_16S);
+  reprojectImageTo3D(disparity, depth, Q, false, CV_32F);*/
 
-  return depth;
+  return Mat();
 }
 
 void stereoReconstructSparse(vector<string> images) {
   vector<CameraParams> cameras;
   vector<Mat> rot, trans;
+  vector< vector<Point2f> > points1, points2;
 
   rot.push_back(Mat::eye(3, 3, CV_64F));
   trans.push_back(Mat::zeros(3, 1, CV_64F));
@@ -179,27 +220,23 @@ void stereoReconstructSparse(vector<string> images) {
     Mat leftimage = imread(images[i-1]);
     Mat rightimage = imread(images[i]);
 
-    Mat R, t, hpts;
+    Mat r, t;
+    vector<Mat> hpts;
     vector<Point2f> pts1, pts2;
-    Mat depth = depth2(leftimage, rightimage, R, t, hpts, pts1, pts2);
+    Mat depth = depth2(leftimage, rightimage, r, t, hpts, pts1, pts2);
 
-    // push back the thingy
-
-    // figure out the new camera matrix based on non-linear methods (using the hypothesis mtx)
-    CameraParams cam1;
-    cam1.ppx = mtx.at<double>(0, 2);
-    cam1.ppy = mtx.at<double>(1, 2);
-    cam1.focal = mtx.at<double>(0, 0);
-    CameraParams cam2;
-    cam2.ppx = mtx.at<double>(0, 2);
-    cam2.ppy = mtx.at<double>(1, 2);
-    cam2.focal = mtx.at<double>(0, 0);
-    cam2.R = R;
-    cam2.t = t;
-    cameras.push_back(cam1);
-    cameras.push_back(cam2);
+    // push back the data
+    rot.push_back(r);
+    trans.push_back(t);
   }
-  BundleAdjusterReproj adjuster;
+
+  // filter out irrelevant matches (to do)
+  //
+  // bundle adjust using cvsba
+  vector<Point3d> points3d;
+  vector< vector<Point2d> > pointsImage;
+  vector< vector<int> > visibility;
+  
 }
 
 int main(int argc, char *argv[]) {
@@ -212,7 +249,7 @@ int main(int argc, char *argv[]) {
   arma::mat K = reshape(arma::mat({
         545.82463365389708, 0, 319.5,
         0, 545.82463365389708, 2.395,
-        0, 0, 1}), 3, 3).t();
+        0, 0, 1 }), 3, 3).t();
   arma::mat D = arma::mat({ -0.17081096154528716, 0.26412699622915992,
       0, 0, -0.080381316677811496 }).t();
   mtx = arma2opencv(K);
@@ -224,13 +261,13 @@ int main(int argc, char *argv[]) {
   Mat leftImage = imread(limgname, IMREAD_GRAYSCALE);
   Mat rightImage = imread(rimgname, IMREAD_GRAYSCALE);
 
-  Mat R, t, pts3d;
+  Mat R, t;
+  vector<Mat> pts3d;
   vector<Point2f> pts1, pts2;
   Mat newleft, newright;
   undistort(leftImage, newleft, mtx, dist);
   undistort(rightImage, newright, mtx, dist);
   Mat depth = depth2(newleft, newright, R, t, pts3d, pts1, pts2);
-  cout << pts3d << endl;
 
   imshow("left", newleft);
   imshow("right", newright);

@@ -1,5 +1,5 @@
 CXX = g++
-CFLAGS = `pkg-config --cflags opencv` -std=c++11 -I/usr/local/include
+CFLAGS = -std=c++11 -I/usr/local/include
 LIBS = -L/usr/local/lib \
 			 -lopencv_core \
 			 -lopencv_highgui \
@@ -13,7 +13,7 @@ LIBS = -L/usr/local/lib \
 			 -lopencv_line_descriptor \
 			 -lopencv_stitching \
 			 -larmadillo
-OBJS = stereo.o highgui.o
+OBJS = stereo.o highgui.o kcluster.o
 
 all: capture calibrate stereo
 
@@ -29,7 +29,10 @@ stereo.o: stereo.cpp
 highgui.o: highgui.cpp
 	$(CXX) $(CFLAGS) -o $@ -c $<
 
-stereo: stereo.o highgui.o
+kcluster.o: kcluster.cpp
+	$(CXX) $(CFLAGS) -o $@ -c $<
+
+stereo: $(OBJS)
 	$(CXX) $(CFLAGS) -o $@ $^ $(LIBS)
 
 clean:

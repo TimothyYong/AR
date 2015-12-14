@@ -1,4 +1,4 @@
-Mat depth2(Mat leftImage, Mat rightImage, Mat &R, Mat &t, Mat &hpts, vector<Point2f> pts1, vector<Point2f> pts2) {
+Mat depth2(Mat leftImage, Mat rightImage, Mat &R, Mat &t, Mat &pts3d, vector<Point2f> pts1, vector<Point2f> pts2) {
   // focal and point projective
   Point2d pp(mtx.at<double>(0, 2), mtx.at<double>(1, 2));
   double focal = mtx.at<double>(0, 0);
@@ -41,6 +41,10 @@ Mat depth2(Mat leftImage, Mat rightImage, Mat &R, Mat &t, Mat &hpts, vector<Poin
   arma::mat K_ = opencv2arma(mtx);
   arma::mat E_ = K_.t() * F_ * K_;
 
+  // or use the built in function (easy way)
+  //Mat E = findEssentialMat(pts1, pts2, focal, pp);
+
+  // svd to get U, V, W
   arma::mat U, V;
   arma::vec s;
   arma::mat W = arma::reshape(arma::mat({
@@ -49,11 +53,12 @@ Mat depth2(Mat leftImage, Mat rightImage, Mat &R, Mat &t, Mat &hpts, vector<Poin
         0, 0, 1 }), 3, 3).t();
   svd(U, s, V, E_);
 
+  // four fold ambiguous
   arma::mat u3 = U.col(2);
-  arma::mat P_1 = arma::join_rows(U * W * V.t(), u3); // filter this out          // d
-  arma::mat P_2 = arma::join_rows(U * W * V.t(), -u3);                            // c
-  arma::mat P_3 = arma::join_rows(U * W.t() * V.t(), u3); // filter this out      // b
-  arma::mat P_4 = arma::join_rows(U * W.t() * V.t(), -u3);                        // a
+  arma::mat P_1 = arma::join_rows(U * W * V.t(), u3);
+  arma::mat P_2 = arma::join_rows(U * W * V.t(), -u3);
+  arma::mat P_3 = arma::join_rows(U * W.t() * V.t(), u3);
+  arma::mat P_4 = arma::join_rows(U * W.t() * V.t(), -u3);
 
   cout << "USV: (SVD)" << endl;
   cout << U << endl << s << endl << V << endl;
@@ -69,10 +74,9 @@ Mat depth2(Mat leftImage, Mat rightImage, Mat &R, Mat &t, Mat &hpts, vector<Poin
   cout << P_4 << endl;
   cout << endl;
 
+  // hack: choose a random matrix out of all 4
   arma::mat P_prime;
-
   int index = rand() % 4;
-
   for (int i = 0; i < 4; i++) {
     switch (i) {
       case 0:
@@ -89,10 +93,11 @@ Mat depth2(Mat leftImage, Mat rightImage, Mat &R, Mat &t, Mat &hpts, vector<Poin
         break;
     }
   }
-  // find the essential matrix and get the rotation and translation
+  // find the essential matrix and get the rotation and translation (easy way)
   //Mat mask;
   //recoverPose(E, pts1, pts2, R, t, focal, pp, mask);
 
+  // or do it H&Z way
   arma::mat R_ = P_prime.cols(0, 2);
   arma::mat t_ = P_prime.col(3);
 
@@ -108,14 +113,19 @@ Mat depth2(Mat leftImage, Mat rightImage, Mat &R, Mat &t, Mat &hpts, vector<Poin
   stereoRectify(mtx, Mat::zeros(5, 1, CV_64F), mtx, Mat::zeros(5, 1, CV_64F), leftImage.size(), R, t, R1, R2, P1, P2, Q);
 
   // triangulate points with the perspective projection
+  Mat hpts;
   triangulatePoints(P1, P2, pts1, pts2, hpts);
+  convertPointsFromHomogeneous(hpts.t(), pts3d);
+
+  // filter out the ambiguities (assumption: local cluster ONLY)
+  pts3d = kclusterFilter(pts3d, 3); // special method
 
   // create a stereo matcher and get a depth frame
   Ptr<StereoBM> stereo = StereoBM::create();
   Mat disparity;
   stereo->compute(leftImage, rightImage, disparity);
   Mat depth;
-  reprojectImageTo3D(disparity, depth, Q, false, CV_16S);
+  reprojectImageTo3D(disparity, depth, Q, false, CV_32F);
 
   imshow(name, depth);
   waitKey(0);
