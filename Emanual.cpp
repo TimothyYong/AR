@@ -131,3 +131,19 @@ Mat depth2(Mat leftImage, Mat rightImage, Mat &R, Mat &t, Mat &pts3d, vector<Poi
   waitKey(0);
   return depth;
 }
+
+
+
+
+
+for (int i = 0; i < projection.size(); i++) {
+    if (i == 0) {
+      cout << "[";
+    }
+    printf("%lf, %lf, %lf", projection[i].x, projection[i].y, projection[i].z);
+    if (i == projection.size()-1) {
+      cout << "]\n";
+    } else {
+      cout << ";\n";
+    }
+  }

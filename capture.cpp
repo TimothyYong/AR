@@ -13,7 +13,7 @@ int main(int argc, char *argv[]) {
     printf("usage: %s [prefix]\n", argv[0]);
     return 1;
   }
-  VideoCapture cam(0);
+  VideoCapture cam(1);
 
   int count = 0;
   char fname[256];

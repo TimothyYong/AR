@@ -13,16 +13,17 @@ LIBS = -L/usr/local/lib \
 			 -lopencv_line_descriptor \
 			 -lopencv_stitching \
 			 -larmadillo \
-			 -lcvsba
+			 -lcvsba \
+			 -lpcl_visualization
 OBJS = stereo.o highgui.o kcluster.o
 
-all: capture calibrate stereo
+all: capture calibrate stereo AR ovr
 
 capture: capture.cpp
 	$(CXX) $(CFLAGS) -o $@ $^ $(LIBS)
 
 calibrate: calibrate.cpp
-	$(CXX) $(CFLAGS) -o $@ $^ $(LIBS) -g
+	$(CXX) $(CFLAGS) -o $@ $^ $(LIBS)
 
 stereo.o: stereo.cpp
 	$(CXX) $(CFLAGS) -o $@ -c $<
@@ -36,5 +37,26 @@ kcluster.o: kcluster.cpp
 stereo: $(OBJS)
 	$(CXX) $(CFLAGS) -o $@ $^ $(LIBS)
 
+AR.o: AR.cpp
+	$(CXX) $(CFLAGS) -o $@ -c $<
+
+AR: AR.o highgui.o
+	$(CXX) $(CFLAGS) -o $@ $^ $(LIBS)
+
+imgproc.o: imgproc.cpp
+	$(CXX) $(CFLAGS) -o $@ -c $<
+
+ovr.o: ovr.cpp
+	$(CXX) $(CFLAGS) -o $@ -c $<
+
+test2.o: test2.cpp
+	$(CXX) $(CFLAGS) -o $@ -c $<
+
+ovr: ovr.o highgui.o imgproc.o test2.o
+	$(CXX) $(CFLAGS) -o $@ $^ $(LIBS)
+
 clean:
-	rm -f *.o capture calibrate stereo *.pyc
+	rm -f *.o capture calibrate stereo AR ovr
+
+run:
+	make clean; make; ./stereo
